@@ -1,0 +1,273 @@
+C51 COMPILER V9.00   1                                                                     07/21/2014 10:56:34 PAGE 1   
+
+
+C51 COMPILER V9.00, COMPILATION OF MODULE 1
+OBJECT MODULE PLACED IN 1.OBJ
+COMPILER INVOKED BY: d:\Keil\C51\BIN\C51.EXE 1.c BROWSE DEBUG OBJECTEXTEND TABS(2)
+
+line level    source
+
+   1          #include<reg52.h>
+   2          #define uchar unsigned char
+   3          #define uint unsigned int
+   4          
+   5          void timer_int(void);   //定时器初始化函数
+   6          char read(void);        //读红外对管函数
+   7          int  pid(char);         //PID程序
+   8          
+   9          /*------------------------- 位定义-------------------------*/
+  10          /*H桥开关位定义*/
+  11          sbit LeftUp2 = P1^0;
+  12          sbit LeftUp1 = P1^1;
+  13          sbit LeftDown2 = P1^2;
+  14          sbit LeftDown1 = P1^3;
+  15          sbit RightDown2 = P1^4;
+  16          sbit RightDown1 = P1^5;
+  17          sbit RightUp2 = P1^6;
+  18          sbit RightUp1 = P1^7;
+  19          sbit top = P3^6;
+  20          
+  21          uchar Kp=7;         //比例系数 7
+  22          float Ki=5;         //积分系数(100倍值) 10表示0.1
+  23          uchar Kd=5;         //微分系数5
+  24          uchar PWM_MAX=100;  //PWM控制级数
+  25          uchar SPEED;        //速度因子 0-10取值
+  26          uchar SPD_SET=10;   //速度设定值
+  27          uchar DIF_TIME=2;   //微分项作用时长2
+  28          
+  29          /*------------------------全局变量定义---------------------*/
+  30          uchar Reversion_L=0;  //左轮反转时长
+  31          uchar Reversion_R=0;  //右轮反转时长
+  32          uchar PWM_L=0 ;       //左电机的占空比
+  33          uchar PWM_R=0 ;       //右电机的占空比
+  34          uchar timer_count=0;  //定时器中断执行次数
+  35          uchar pid_time=0;     //pid调整间隔时长
+  36          char  position=0x10;  //车体偏移状态，初始化为停车状态
+  37          char  error=0;
+  38          char  last_error=0;   //前一误差值
+  39          uchar dif_act_time;   //微分项作用时长
+  40          int   I_sum=0;        //积分项累计数（100倍）
+  41          int   I_term=0;       //积分项
+  42          int   P_term, D_term; //比例项和微分项
+  43          
+  44          /*定时器初始化程序*/
+  45          void timer_int(void)
+  46          {
+  47   1        IE = 0x82;    //1XX0 0010 允许中断 无定时器1中断 定时器0中断
+  48   1        TMOD = 0x02;  //使用定时器0，工作方式2 自装入八位计时
+  49   1        TL0 = 6;      //计时0.25ms
+  50   1        TH0 = 6;
+  51   1        TR0 = 1;      //开计时器0
+  52   1        IT0 = 0;      //低电平触发方式
+  53   1        EX0 = 1; 
+  54   1      }
+  55          
+C51 COMPILER V9.00   1                                                                     07/21/2014 10:56:34 PAGE 2   
+
+  56          /*定时器0中断服务程序*/
+  57          void inter_0(void)  interrupt 1 //定时器0的中断服务程序
+  58          {
+  59   1      /*-------------------------PWM调制-------------------------*/   
+  60   1          if(timer_count<PWM_L)
+  61   1          {   
+  62   2            if(Reversion_L)
+  63   2            { //左向反转  
+  64   3              LeftUp1=0;LeftUp2=1;
+  65   3              LeftDown1=0;LeftDown2=1;
+  66   3            }
+  67   2            else
+  68   2            { //左向正转
+  69   3              LeftUp1=1;LeftUp2=0;
+  70   3              LeftDown1=1;LeftDown2=0;
+  71   3            }
+  72   2          }
+  73   1          else
+  74   1          { //左向停止
+  75   2            LeftUp1=0;LeftUp2=0;
+  76   2            LeftDown1=0;LeftDown2=0;  
+  77   2          }
+  78   1          if(timer_count<PWM_R)
+  79   1          {   
+  80   2            if(Reversion_R)
+  81   2            { //右向反转  
+  82   3              RightUp1=0;RightUp2=1;
+  83   3              RightDown1=0;RightDown2=1;
+  84   3            }
+  85   2            else
+  86   2            { //右向正转
+  87   3              RightUp1=1;RightUp2=0;
+  88   3              RightDown1=1;RightDown2=0;
+  89   3            }
+  90   2          }
+  91   1          else
+  92   1          { //右向停止
+  93   2            RightUp1=0;RightUp2=0;
+  94   2            RightDown1=0;RightDown2=0;  
+  95   2          }
+  96   1          
+  97   1      /*-------------------------PWM调制计数-------------------------*/ 
+  98   1        timer_count++;
+  99   1        if(timer_count>=PWM_MAX)
+ 100   1        { timer_count=0;
+ 101   2          pid_time++;
+ 102   2        }     
+ 103   1      }
+ 104          
+ 105          /*PID控制参数计算程序*/
+ 106          int pid(char error)
+ 107          {
+ 108   1        int pid_out;
+ 109   1        
+ 110   1        I_sum+=Ki*error;            //积分量计算
+ 111   1        I_term=I_sum/100;
+ 112   1        
+ 113   1        if(I_term>PWM_MAX/2) 
+ 114   1        { 
+ 115   2          I_term=PWM_MAX/2;           //限定积分量上限
+ 116   2          I_sum=100*PWM_MAX/2;
+ 117   2        }
+C51 COMPILER V9.00   1                                                                     07/21/2014 10:56:34 PAGE 3   
+
+ 118   1        else if(I_term<-(PWM_MAX/2)) 
+ 119   1        { 
+ 120   2          I_term=-(PWM_MAX/2);        //限定积分量下限
+ 121   2          I_sum=-100*PWM_MAX/2;
+ 122   2        }
+ 123   1        
+ 124   1        if(error!=last_error)
+ 125   1        {
+ 126   2          D_term =Kd*(error - last_error);  //微分量计算
+ 127   2          dif_act_time=DIF_TIME;            //设定微分项作用时长
+ 128   2          
+ 129   2          //if(error==0) I_term+=P_term;
+ 130   2          P_term =Kp*error; //比例量计算
+ 131   2          
+ 132   2          last_error=error; //缓存当前误差量
+ 133   2        }
+ 134   1        if(dif_act_time > 0) dif_act_time--;
+ 135   1        else D_term=0;      //微分项作用到时
+ 136   1        
+ 137   1        pid_out= (int)(P_term+I_term+D_term);       //PID控制量计算
+ 138   1        if(pid_out>PWM_MAX) pid_out=PWM_MAX;        //控制量上限=PWM_MAX
+ 139   1        else if(pid_out<-PWM_MAX) pid_out=-PWM_MAX; //控制量下限=-PWM_MAX
+ 140   1        
+ 141   1        return(pid_out);
+ 142   1      }
+ 143          
+ 144          /*主程序*/
+ 145          void main()
+ 146          {
+ 147   1        int i;
+ 148   1        int pid_control=0;
+ 149   1        uchar state;
+ 150   1        
+ 151   1        P1 = 0x00;          //小车静止
+ 152   1        timer_int();        //定时器初始化
+ 153   1        while(1)
+ 154   1        {    
+ 155   2          
+ 156   2          while(top==0)
+ 157   2          {
+ 158   3            P1=0x00;
+ 159   3          }
+ 160   2          //读红外寻迹对管,返回车体位置误差值：右+ 左- 范围(-10~10,-12,12,0x10) 
+ 161   2          state=P0;
+ 162   2          switch(state)
+ 163   2          {
+ 164   3            case 0x00: if((position>=-1 && position<=1) || (position==0x10))
+ 165   3                       { 
+ 166   4                          position=0;   //车体回居中位置
+ 167   4                       }
+ 168   3                       if(position<=-11) //左转不足出赛道
+ 169   3                       {  
+ 170   4                          position=-13;                   
+ 171   4                       }  
+ 172   3                       if(position>=11)  //右转不足出赛道
+ 173   3                       {  
+ 174   4                          position=13;
+ 175   4                       }   
+ 176   3                       break; //全白 前进
+ 177   3            
+ 178   3            case 0x18: position=0;break;  //车体居中
+ 179   3            
+C51 COMPILER V9.00   1                                                                     07/21/2014 10:56:34 PAGE 4   
+
+ 180   3            case 0x01: position=11;break; //右一
+ 181   3            case 0x03: position=9;break;  //右一、二
+ 182   3            case 0x02: position=7;break;  //右二
+ 183   3            case 0x06: position=5;break;  //右二、三
+ 184   3            case 0x04: position=3;break;  //右三
+ 185   3            case 0x0C: position=2;break;  //右三、四
+ 186   3            case 0x08: position=1;break;  //右四
+ 187   3            
+ 188   3            case 0x80: position=-11;break;//左一
+ 189   3            case 0xC0: position=-9;break; //左一、二
+ 190   3            case 0x40: position=-7;break; //左二
+ 191   3            case 0x60: position=-5;break; //左二、三
+ 192   3            case 0x20: position=-3;break; //左三
+ 193   3            case 0x30: position=-2;break; //左三、四
+ 194   3            case 0x10: position=-1;break; //左四
+ 195   3            
+ 196   3            default:  if(position!=0x10) 
+ 197   3                       { //非法状态
+ 198   4                         position=0x10;
+ 199   4                         PWM_L =  0;
+ 200   4                         PWM_R =  0; //停止
+ 201   4                       }
+ 202   3                       break; 
+ 203   3            }
+ 204   2            error=position;
+ 205   2            if(error!=0x10)//合法状态
+ 206   2            {
+ 207   3              if(pid_time>=1 || error!=last_error)    //timer_count%25==1
+ 208   3              {
+ 209   4                pid_time=0;
+ 210   4              
+ 211   4                if(error>=0) SPEED=SPD_SET;//-error*0.2;
+ 212   4                else SPEED=SPD_SET;//+error*0.2;
+ 213   4                
+ 214   4                pid_control=pid(error);
+ 215   4                if(pid_control>=0)
+ 216   4                {
+ 217   5                  i=  SPEED*(PWM_MAX + pid_control)/10;
+ 218   5                  PWM_L =  i>PWM_MAX ? PWM_MAX: i;
+ 219   5                  Reversion_L=0;
+ 220   5                  
+ 221   5                  i=  SPEED*(PWM_MAX - 2*pid_control)/10;
+ 222   5                  if(i<0)  
+ 223   5                  { Reversion_R=1; i=-i;}
+ 224   5                  else Reversion_R=0;
+ 225   5                  PWM_R =  i>PWM_MAX ? PWM_MAX: i;            
+ 226   5                }
+ 227   4                else
+ 228   4                {
+ 229   5                  i=  SPEED*(PWM_MAX + 2*pid_control)/10;
+ 230   5                  if(i<0)  
+ 231   5                  { Reversion_L=1; i=-i;}
+ 232   5                  else Reversion_L=0;
+ 233   5                  PWM_L =  i>PWM_MAX ? PWM_MAX: i;
+ 234   5                  
+ 235   5                  i=  SPEED*(PWM_MAX - pid_control)/10;
+ 236   5                  PWM_R =  i>PWM_MAX ? PWM_MAX: i;
+ 237   5                  Reversion_R=0;
+ 238   5                }
+ 239   4              }
+ 240   3            }
+ 241   2        }   
+C51 COMPILER V9.00   1                                                                     07/21/2014 10:56:34 PAGE 5   
+
+ 242   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    974    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     28       5
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
